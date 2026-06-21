@@ -25,7 +25,7 @@ pipeline {
             steps {
                 script {
                     dir('terraform') {
-                        sh "terraform init -backend-config=\"bucket=ssp-terraform-state-bucket\" -backend-config=\"key=services/search-service/terraform.tfstate\" -backend-config=\"region=${AWS_REGION}\""
+                        sh 'terraform init -backend-config=backend.conf'
                         sh 'terraform workspace select dev || terraform workspace new dev'
                         env.ECR_REPOSITORY_URL = sh(script: 'terraform output -raw ecr_repository_url', returnStdout: true).trim()
                     }

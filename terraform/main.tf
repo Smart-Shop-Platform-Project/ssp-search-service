@@ -27,7 +27,7 @@ resource "aws_iam_policy" "ssm_policy" {
 data "terraform_remote_state" "base_infra" {
   backend = "s3"
   config = {
-    bucket = "ssp-terraform-state-bucket"
+    bucket = "ssp-terraform-state-bucket-kuntal2098"
     key    = "infrastructure/base/terraform.tfstate"
     region = var.aws_region
   }
