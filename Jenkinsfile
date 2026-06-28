@@ -1,13 +1,18 @@
 pipeline {
+    // Define the agent to use for the entire pipeline
     agent {
         docker {
             image 'ssp-jenkins-agent:latest'
-            // Tell Jenkins to use the Docker tool configured in "Global Tool Configuration"
-            tool 'docker-host'
             args '-v /var/run/docker.sock:/var/run/docker.sock'
             registryUrl "https://${env.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
             registryCredentialsId 'aws-creds'
         }
+    }
+
+    // Define the tools required for this pipeline.
+    // Jenkins will ensure these are available in the PATH.
+    tools {
+        terraform 'Terraform-1.0'
     }
 
     environment {
