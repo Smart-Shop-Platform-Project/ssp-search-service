@@ -1,30 +1,27 @@
 pipeline {
     agent {
-        // The agent now needs AWS CLI. The previous custom agent Dockerfile
-        // did not include it. We should add it. For now, let's assume it's there.
         docker {
-            image 'ssp-jenkins-agent:latest' // Assuming you built and tagged this locally or are pulling from a registry
+            image 'ssp-jenkins-agent:latest'
+            // Tell Jenkins to use the Docker tool configured in "Global Tool Configuration"
+            tool 'docker-host'
             args '-v /var/run/docker.sock:/var/run/docker.sock'
+            registryUrl "https://${env.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
+            registryCredentialsId 'aws-creds'
         }
     }
 
     environment {
         AWS_REGION = 'us-east-1'
         SONAR_TOKEN = credentials('SONAR_TOKEN')
-        // Define placeholders for dynamic variables
-        AWS_ACCOUNT_ID = ''
-        AGENT_IMAGE_ECR_URL = ''
+        AWS_ACCOUNT_ID = '' // Will be populated in the Setup stage
     }
 
     stages {
         stage('Setup Environment') {
             steps {
-                // This stage dynamically fetches the AWS Account ID
                 withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY', credentialsId: 'aws-creds')]) {
                     script {
-                        // This requires the Jenkins agent to have the AWS CLI installed
                         env.AWS_ACCOUNT_ID = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
-                        env.AGENT_IMAGE_ECR_URL = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com/ssp-jenkins-agent:latest"
                     }
                 }
             }
@@ -61,7 +58,6 @@ pipeline {
                     }
 
                     def dockerImage = docker.build("ssp-search-service:${env.BUILD_NUMBER}", ".")
-                    // Use the dynamically fetched AWS Account ID for the registry URL
                     docker.withRegistry("https://${env.ECR_REPOSITORY_URL}", 'aws-creds') {
                         dockerImage.push("${env.BUILD_NUMBER}")
                         dockerImage.push("latest")
