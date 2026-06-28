@@ -12,8 +12,8 @@ pipeline {
                 script {
                     def awsAccountId
                     withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY', credentialsId: 'aws-creds')]) {
-                        // Use the ABSOLUTE PATH to the aws executable on the host
-                        awsAccountId = sh(script: '/usr/local/bin/aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
+                        // Use the REAL, absolute path to the aws executable, bypassing the symbolic link.
+                        awsAccountId = sh(script: '/usr/local/aws-cli/v2/current/bin/aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
                     }
 
                     if (!awsAccountId) {
