@@ -1,6 +1,4 @@
 pipeline {
-    // This pipeline will run on any available agent.
-    // The actual build steps will be executed inside a specified Docker container.
     agent any
 
     environment {
@@ -12,11 +10,10 @@ pipeline {
         stage('Execute Build in Container') {
             steps {
                 script {
-                    // This is the most robust pattern. We define everything inside one script block.
-                    // First, get the AWS Account ID from the host machine, which has AWS CLI installed.
                     def awsAccountId
                     withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY', credentialsId: 'aws-creds')]) {
-                        awsAccountId = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
+                        // Use the ABSOLUTE PATH to the aws executable on the host
+                        awsAccountId = sh(script: '/usr/local/bin/aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
                     }
 
                     if (!awsAccountId) {
@@ -26,17 +23,12 @@ pipeline {
                     def ecrRegistry = "${awsAccountId}.dkr.ecr.${AWS_REGION}.amazonaws.com"
                     def agentImage = "${ecrRegistry}/ssp-jenkins-agent:latest"
 
-                    // Now, log in to that registry
                     docker.withRegistry("https://${ecrRegistry}", 'aws-creds') {
-
-                        // And finally, run all subsequent steps inside the container from that registry
                         docker.image(agentImage).inside('-v /var/run/docker.sock:/var/run/docker.sock') {
 
-                            // --- STAGE: CHECKOUT ---
                             echo "Checking out code..."
                             checkout scm
 
-                            // --- STAGE: TEST & ANALYZE ---
                             echo "Installing dependencies and running tests..."
                             sh 'pip install -r requirements-dev.txt'
                             sh 'pytest tests/unit || echo "No tests configured yet"'
@@ -44,7 +36,6 @@ pipeline {
                                 sh "sonar-scanner -Dsonar.projectKey=ssp-search-service -Dsonar.sources=app -Dsonar.login=${SONAR_TOKEN}"
                             }
 
-                            // --- STAGE: BUILD & PUSH ---
                             echo "Building and pushing application Docker image..."
                             def ecrRepoUrl
                             dir('terraform') {
@@ -57,11 +48,9 @@ pipeline {
                             }
 
                             def dockerImage = docker.build("ssp-search-service:${env.BUILD_NUMBER}", ".")
-                            // The withRegistry block above handles the login, so we just push
                             dockerImage.push("${env.BUILD_NUMBER}")
                             dockerImage.push("latest")
 
-                            // --- STAGE: DEPLOY ---
                             echo "Planning and deploying to environment..."
                             dir('terraform') {
                                 input message: "Apply plan to ${params.TARGET_ENV}?", ok: 'Deploy'
