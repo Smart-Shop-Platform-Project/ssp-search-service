@@ -1,31 +1,24 @@
 pipeline {
-    // Define the agent, but without the ECR registry details initially.
-    // This avoids credential issues before the pipeline has fully started.
-    agent {
-        docker {
-            image 'ssp-jenkins-agent:latest'
-            args '-v /var/run/docker.sock:/var/run/docker.sock'
-            // The 'alwaysPull' option ensures we get the latest agent if it's updated.
-            alwaysPull true
-        }
-    }
+    // Use any available agent on the Jenkins controller.
+    // We will manually specify the Docker container for each stage.
+    agent any
 
     environment {
         AWS_REGION = 'us-east-1'
         SONAR_TOKEN = credentials('SONAR_TOKEN')
         AWS_ACCOUNT_ID = ''
-        ECR_REGISTRY = '' // Placeholder for the full registry URL
+        ECR_REGISTRY = ''
     }
 
     stages {
         stage('Setup Environment') {
             steps {
-                withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY', credentialsId: 'aws-creds')]) {
-                    script {
-                        // This stage now has confirmed access to 'aws-creds'
-                        env.AWS_ACCOUNT_ID = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
-                        env.ECR_REGISTRY = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
-                    }
+                // This step runs on the base Jenkins agent, but it needs AWS CLI.
+                // This assumes the AWS CLI is installed on the host and in the PATH.
+                // A better way is to run this inside the container too.
+                script {
+                    env.AWS_ACCOUNT_ID = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
+                    env.ECR_REGISTRY = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
                 }
             }
         }
@@ -36,56 +29,52 @@ pipeline {
             }
         }
 
-        stage('Unit Tests & SonarQube Analysis') {
+        stage('Test & Analyze') {
             steps {
-                sh 'pip install -r requirements-dev.txt'
-                sh 'pytest tests/unit || echo "No tests configured yet"'
+                // Explicitly run this stage inside your custom agent container
                 script {
-                    withSonarQubeEnv('SonarQube-Server') {
-                        sh "sonar-scanner -Dsonar.projectKey=ssp-search-service -Dsonar.sources=app -Dsonar.login=${SONAR_TOKEN}"
+                    docker.image("${env.ECR_REGISTRY}/ssp-jenkins-agent:latest").inside {
+                        withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY', credentialsId: 'aws-creds')]) {
+                            sh 'pip install -r requirements-dev.txt'
+                            sh 'pytest tests/unit || echo "No tests configured yet"'
+                            withSonarQubeEnv('SonarQube-Server') {
+                                sh "sonar-scanner -Dsonar.projectKey=ssp-search-service -Dsonar.sources=app -Dsonar.login=${SONAR_TOKEN}"
+                            }
+                        }
                     }
                 }
             }
         }
 
-        stage('Build and Push Docker Image') {
+        stage('Build, Push & Deploy') {
             steps {
+                // Run the rest of the steps inside the container as well
                 script {
-                    dir('terraform') {
-                        sh "terraform init -backend-config=\"bucket=ssp-terraform-state-bucket\" -backend-config=\"key=services/search-service/terraform.tfstate\" -backend-config=\"region=${AWS_REGION}\""
-                        sh 'terraform workspace select dev || terraform workspace new dev'
-                        env.ECR_REPOSITORY_URL = sh(script: 'terraform output -raw ecr_repository_url', returnStdout: true).trim()
-                    }
-                    if (!env.ECR_REPOSITORY_URL) {
-                        error "Failed to get ECR repository URL from Terraform."
-                    }
+                    docker.image("${env.ECR_REGISTRY}/ssp-jenkins-agent:latest").inside {
+                        withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY', credentialsId: 'aws-creds')]) {
+                            // Terraform and Docker commands
+                            dir('terraform') {
+                                sh "terraform init -backend-config=\"bucket=ssp-terraform-state-bucket\" -backend-config=\"key=services/search-service/terraform.tfstate\" -backend-config=\"region=${AWS_REGION}\""
+                                sh 'terraform workspace select dev || terraform workspace new dev'
+                                env.ECR_REPOSITORY_URL = sh(script: 'terraform output -raw ecr_repository_url', returnStdout: true).trim()
+                            }
+                            if (!env.ECR_REPOSITORY_URL) {
+                                error "Failed to get ECR repository URL from Terraform."
+                            }
 
-                    // Explicitly log in to ECR inside the stage where it's needed
-                    docker.withRegistry("https://${env.ECR_REGISTRY}", 'aws-creds') {
-                        def dockerImage = docker.build("ssp-search-service:${env.BUILD_NUMBER}", ".")
-                        dockerImage.push("${env.BUILD_NUMBER}")
-                        dockerImage.push("latest")
-                    }
-                }
-            }
-        }
+                            def dockerImage = docker.build("ssp-search-service:${env.BUILD_NUMBER}", ".")
+                            docker.withRegistry("https://${env.ECR_REGISTRY}", 'aws-creds') {
+                                dockerImage.push("${env.BUILD_NUMBER}")
+                                dockerImage.push("latest")
+                            }
 
-        stage('Deploy to Environment') {
-            steps {
-                script {
-                    dir('terraform') {
-                        sh "terraform workspace select ${params.TARGET_ENV} || terraform workspace new ${params.TARGET_ENV}"
-                        def imageUrl = "${env.ECR_REPOSITORY_URL}:${env.BUILD_NUMBER}"
-                        sh "terraform plan -var=\"container_image=${imageUrl}\" -var=\"environment=${params.TARGET_ENV}\" -out=tfplan"
-                    }
-                }
-            }
-            post {
-                success {
-                    input message: "Apply plan to ${params.TARGET_ENV}?", ok: 'Deploy'
-                    script {
-                        dir('terraform') {
-                            sh 'terraform apply tfplan'
+                            // Deployment part
+                            dir('terraform') {
+                                input message: "Apply plan to ${params.TARGET_ENV}?", ok: 'Deploy'
+                                sh "terraform workspace select ${params.TARGET_ENV}"
+                                def imageUrl = "${env.ECR_REPOSITORY_URL}:${env.BUILD_NUMBER}"
+                                sh "terraform apply -auto-approve -var=\"container_image=${imageUrl}\" -var=\"environment=${params.TARGET_ENV}\""
+                            }
                         }
                     }
                 }
