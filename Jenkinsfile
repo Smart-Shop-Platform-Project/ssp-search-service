@@ -1,19 +1,20 @@
 pipeline {
-    // Use your custom agent from ECR. This agent has Python, Docker, AWS CLI,
-    // Terraform, and Sonar Scanner all pre-installed in its PATH.
+    // Define the agent, but without the ECR registry details initially.
+    // This avoids credential issues before the pipeline has fully started.
     agent {
         docker {
             image 'ssp-jenkins-agent:latest'
             args '-v /var/run/docker.sock:/var/run/docker.sock'
-            registryUrl "https://${env.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
-            registryCredentialsId 'aws-creds'
+            // The 'alwaysPull' option ensures we get the latest agent if it's updated.
+            alwaysPull true
         }
     }
 
     environment {
         AWS_REGION = 'us-east-1'
         SONAR_TOKEN = credentials('SONAR_TOKEN')
-        AWS_ACCOUNT_ID = '' // Will be populated in the Setup stage
+        AWS_ACCOUNT_ID = ''
+        ECR_REGISTRY = '' // Placeholder for the full registry URL
     }
 
     stages {
@@ -21,7 +22,9 @@ pipeline {
             steps {
                 withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY', credentialsId: 'aws-creds')]) {
                     script {
+                        // This stage now has confirmed access to 'aws-creds'
                         env.AWS_ACCOUNT_ID = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
+                        env.ECR_REGISTRY = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
                     }
                 }
             }
@@ -57,8 +60,9 @@ pipeline {
                         error "Failed to get ECR repository URL from Terraform."
                     }
 
-                    def dockerImage = docker.build("ssp-search-service:${env.BUILD_NUMBER}", ".")
-                    docker.withRegistry("https://${env.ECR_REPOSITORY_URL}", 'aws-creds') {
+                    // Explicitly log in to ECR inside the stage where it's needed
+                    docker.withRegistry("https://${env.ECR_REGISTRY}", 'aws-creds') {
+                        def dockerImage = docker.build("ssp-search-service:${env.BUILD_NUMBER}", ".")
                         dockerImage.push("${env.BUILD_NUMBER}")
                         dockerImage.push("latest")
                     }
