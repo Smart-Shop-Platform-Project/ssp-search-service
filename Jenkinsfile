@@ -1,6 +1,4 @@
 pipeline {
-    // Request the specific agent by the label you configured in the Docker Cloud settings.
-    // Jenkins will now automatically start your custom container for this pipeline.
     agent {
         label 'ssp-agent'
     }
@@ -11,8 +9,6 @@ pipeline {
     }
 
     stages {
-        // No 'Setup Environment' stage needed, as all tools are already in the agent.
-
         stage('Checkout') {
             steps {
                 checkout scm
@@ -21,12 +17,17 @@ pipeline {
 
         stage('Unit Tests & SonarQube Analysis') {
             steps {
-                // All commands will now work because they are inside your custom agent.
                 withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY', credentialsId: 'aws-creds')]) {
-                    sh 'pip install -r requirements-dev.txt'
-                    sh 'pytest tests/unit || echo "No tests configured yet"'
-                    withSonarQubeEnv('SonarQube-Server') {
-                        sh "sonar-scanner -Dsonar.projectKey=ssp-search-service -Dsonar.sources=app -Dsonar.login=${SONAR_TOKEN}"
+                    // Create and activate a virtual environment to comply with PEP 668
+                    sh 'python3 -m venv venv'
+                    // All subsequent commands will use the python/pip from this venv
+                    sh '. venv/bin/activate && pip install -r requirements-dev.txt'
+                    sh '. venv/bin/activate && pytest tests/unit || echo "No tests configured yet"'
+
+                    script {
+                        withSonarQubeEnv('SonarQube-Server') {
+                            sh ". venv/bin/activate && sonar-scanner -Dsonar.projectKey=ssp-search-service -Dsonar.sources=app -Dsonar.login=${SONAR_TOKEN}"
+                        }
                     }
                 }
             }
@@ -48,10 +49,13 @@ pipeline {
                             error "Failed to get ECR repository URL from Terraform."
                         }
 
-                        // Log in to ECR
                         sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ecrRegistry}"
 
                         def dockerImage = docker.build("ssp-search-service:${env.BUILD_NUMBER}", ".")
+                        // The ECR repo URL is now in an env var, but we need to tag the image with it
+                        dockerImage.tag("${env.ECR_REPOSITORY_URL}:${env.BUILD_NUMBER}")
+                        dockerImage.tag("${env.ECR_REPOSITORY_URL}:latest")
+
                         dockerImage.push("${env.BUILD_NUMBER}")
                         dockerImage.push("latest")
                     }
