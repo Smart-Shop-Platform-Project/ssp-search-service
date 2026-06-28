@@ -1,5 +1,6 @@
 pipeline {
-    // Define the agent to use for the entire pipeline
+    // Use your custom agent from ECR. This agent has Python, Docker, AWS CLI,
+    // Terraform, and Sonar Scanner all pre-installed in its PATH.
     agent {
         docker {
             image 'ssp-jenkins-agent:latest'
@@ -7,12 +8,6 @@ pipeline {
             registryUrl "https://${env.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
             registryCredentialsId 'aws-creds'
         }
-    }
-
-    // Define the tools required for this pipeline.
-    // Jenkins will ensure these are available in the PATH.
-    tools {
-        terraform 'Terraform-1.0'
     }
 
     environment {
