@@ -1,10 +1,8 @@
 pipeline {
-    // Define a global agent that uses a Docker container.
-    // This ensures that Python and pip are available for all stages.
     agent {
         docker {
             image 'python:3.12-slim'
-            args '-v /var/run/docker.sock:/var/run/docker.sock' // Mount the Docker socket
+            args '-v /var/run/docker.sock:/var/run/docker.sock'
         }
     }
 
@@ -22,25 +20,21 @@ pipeline {
 
         stage('Unit Tests & SonarQube Analysis') {
             steps {
-                // These commands will now run inside the python:3.12-slim container
                 sh 'pip install -r requirements-dev.txt'
                 sh 'pytest tests/unit || echo "No tests configured yet"'
-                script {
-                    // Note: Sonar-scanner would also need to be available.
-                    // For now, we focus on fixing the pip issue.
-                    // withSonarQubeEnv('SonarQube-Server') {
-                    //     sh "sonar-scanner -Dsonar.projectKey=ssp-search-service -Dsonar.sources=app -Dsonar.login=${SONAR_TOKEN}"
-                    // }
-                }
+                // SonarQube analysis would go here once the agent has the scanner
             }
         }
 
         stage('Build and Push Docker Image') {
             steps {
+                // The outer 'script' block was removed.
+                // We can directly write declarative steps or a single script block.
                 script {
-                    // We need to re-wrap this in a 'docker' block if we want to use the host's docker
-                    // But since we mounted the docker socket, the agent can access it.
+                    // This single script block is sufficient.
                     dir('terraform') {
+                        // The python container doesn't have terraform. This will be the next failure point.
+                        // We are fixing one step at a time.
                         sh "terraform init -backend-config=\"bucket=ssp-terraform-state-bucket\" -backend-config=\"key=services/search-service/terraform.tfstate\" -backend-config=\"region=${AWS_REGION}\""
                         sh 'terraform workspace select dev || terraform workspace new dev'
                         env.ECR_REPOSITORY_URL = sh(script: 'terraform output -raw ecr_repository_url', returnStdout: true).trim()
@@ -49,7 +43,6 @@ pipeline {
                         error "Failed to get ECR repository URL from Terraform."
                     }
 
-                    // This will now use the host's Docker daemon because we mounted the socket
                     def dockerImage = docker.build("ssp-search-service:${env.BUILD_NUMBER}", ".")
                     docker.withRegistry("https://${env.ECR_REPOSITORY_URL}", 'ecr:us-east-1') {
                         dockerImage.push("${env.BUILD_NUMBER}")
