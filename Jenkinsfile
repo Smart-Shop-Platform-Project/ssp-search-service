@@ -18,15 +18,18 @@ pipeline {
         stage('Unit Tests & SonarQube Analysis') {
             steps {
                 withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY', credentialsId: 'aws-creds')]) {
-                    // Create and activate a virtual environment to comply with PEP 668
                     sh 'python3 -m venv venv'
-                    // All subsequent commands will use the python/pip from this venv
+                    // FIX 1: Install BOTH requirements.txt and requirements-dev.txt
+                    sh '. venv/bin/activate && pip install -r requirements.txt'
                     sh '. venv/bin/activate && pip install -r requirements-dev.txt'
-                    sh '. venv/bin/activate && pytest tests/unit || echo "No tests configured yet"'
+
+                    // Now pytest will find all the necessary modules
+                    sh '. venv/bin/activate && pytest tests/unit || echo "Tests failed or no tests found"'
 
                     script {
                         withSonarQubeEnv('SonarQube-Server') {
-                            sh ". venv/bin/activate && sonar-scanner -Dsonar.projectKey=ssp-search-service -Dsonar.sources=app -Dsonar.login=${SONAR_TOKEN}"
+                            // FIX 2: Use the absolute path to the sonar-scanner inside the container
+                            sh ". venv/bin/activate && /sonar-scanner-4.7.0.2747-linux/bin/sonar-scanner -Dsonar.projectKey=ssp-search-service -Dsonar.sources=app -Dsonar.login=${SONAR_TOKEN}"
                         }
                     }
                 }
@@ -52,7 +55,6 @@ pipeline {
                         sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ecrRegistry}"
 
                         def dockerImage = docker.build("ssp-search-service:${env.BUILD_NUMBER}", ".")
-                        // The ECR repo URL is now in an env var, but we need to tag the image with it
                         dockerImage.tag("${env.ECR_REPOSITORY_URL}:${env.BUILD_NUMBER}")
                         dockerImage.tag("${env.ECR_REPOSITORY_URL}:latest")
 
